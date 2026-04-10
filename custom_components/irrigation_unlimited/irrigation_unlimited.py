@@ -135,6 +135,7 @@ from .const import (
     CONF_GRANULARITY,
     CONF_INCREASE,
     CONF_INDEX,
+    CONF_INTERLEAVE,
     CONF_LOGGING,
     CONF_MAXIMUM,
     CONF_MAX_LOG_ENTRIES,
@@ -3002,6 +3003,7 @@ class IUSequenceRun(IUBase):
         """Build out the sequence. Pre allocate runs and determine
         the duration"""
         # pylint: disable=too-many-nested-blocks
+        interleave = self._controller.interleave
         next_run = self._start_time = self._end_time = wash_dt(dt.utcnow())
         for sequence_repeat in range(self._sequence.repeat):
             for sequence_zone in self._sequence.zones:
@@ -3046,7 +3048,8 @@ class IUSequenceRun(IUBase):
                             )
                             zone_run_time += duration_adjusted + delay
                         duration_max = max(duration_max, zone_run_time - next_run)
-                next_run += duration_max
+                if not interleave:
+                    next_run += duration_max
 
         self._remaining_time = self._end_time - self._start_time
         return self._remaining_time
@@ -4416,6 +4419,7 @@ class IUController(IUBase):
         self._postamble: timedelta = None
         self._queue_manual: bool = False
         self._show_sequence_status: bool = True
+        self._interleave: bool = False
         # Private variables
         self._initialised: bool = False
         self._finalised: bool = False
@@ -4546,6 +4550,11 @@ class IUController(IUBase):
     def show_sequence_status(self) -> bool:
         """Return is sequence_status attribute should be shown"""
         return self._show_sequence_status
+
+    @property
+    def interleave(self) -> bool:
+        """Return if zones should be interleaved within sequences"""
+        return self._interleave
 
     @property
     def status(self) -> str:
@@ -4701,6 +4710,7 @@ class IUController(IUBase):
         self._show_sequence_status = config.get(
             CONF_SHOW_SEQUENCE_STATUS, self._show_sequence_status
         )
+        self._interleave = config.get(CONF_INTERLEAVE, self._interleave)
         all_zones = config.get(CONF_ALL_ZONES_CONFIG)
         zidx: int = 0
         for zidx, zone_config in enumerate(config[CONF_ZONES]):
@@ -4851,6 +4861,85 @@ class IUController(IUBase):
                 status |= IURQStatus.EXTENDED
         return status
 
+    def _deconflict_zones(self, stime: datetime) -> bool:
+        """When interleave is enabled, shift overlapping zone runs so that
+        only one zone is active at any given time while preserving the
+        minimum delay between consecutive runs of the same zone.
+
+        Uses an iterative approach:
+        1. Fix overlaps — no two zone runs active simultaneously
+        2. Fix delay violations — same-zone consecutive runs respect their delay
+
+        Returns True if any runs were shifted."""
+
+        # Collect all future/running runs grouped by zone
+        zone_runs: dict[int, list[IURun]] = {}
+        all_runs: list[IURun] = []
+        for zone in self._zones:
+            runs = sorted(
+                [r for r in zone.runs if not r.expired],
+                key=lambda r: r.start_time,
+            )
+            if runs:
+                zone_runs[id(zone)] = runs
+                all_runs.extend(runs)
+
+        if len(all_runs) < 2:
+            return False
+
+        # Capture the required minimum gap between consecutive same-zone runs
+        # from the original spacing set by build() (duration + delay)
+        zone_min_gaps: dict[int, list[timedelta]] = {}
+        for zone_id, runs in zone_runs.items():
+            gaps = []
+            for i in range(1, len(runs)):
+                gaps.append(runs[i].start_time - runs[i - 1].end_time)
+            zone_min_gaps[zone_id] = gaps
+
+        # Iteratively resolve overlaps and delay violations
+        modified = False
+        for _ in range(50):
+            changed = False
+
+            # Pass 1: fix overlaps (no two runs at the same time)
+            all_runs.sort(key=lambda r: r.start_time)
+            occupied_until: datetime = None
+            for run in all_runs:
+                if occupied_until is not None and run.start_time < occupied_until:
+                    shift = occupied_until - run.start_time
+                    run.start_time = run.start_time + shift
+                    run.end_time = run.end_time + shift
+                    changed = True
+                occupied_until = run.end_time
+
+            # Pass 2: fix delay constraints for same-zone consecutive runs
+            for zone_id, runs in zone_runs.items():
+                runs.sort(key=lambda r: r.start_time)
+                gaps = zone_min_gaps[zone_id]
+                for i in range(1, len(runs)):
+                    required_gap = gaps[i - 1]
+                    actual_gap = runs[i].start_time - runs[i - 1].end_time
+                    if actual_gap < required_gap:
+                        shift = required_gap - actual_gap
+                        runs[i].start_time = runs[i].start_time + shift
+                        runs[i].end_time = runs[i].end_time + shift
+                        changed = True
+
+            if changed:
+                modified = True
+            else:
+                break
+
+        # Update run metadata
+        if modified:
+            for run in all_runs:
+                run.update_status(stime)
+                if run.sequence_run is not None:
+                    if run.end_time > run.sequence_run.end_time:
+                        run.sequence_run._end_time = run.end_time
+
+        return modified
+
     def muster(self, stime: datetime, force: bool) -> IURQStatus:
         """Calculate run times for this controller. This is where most of the hard yakka
         is done."""
@@ -4898,6 +4987,11 @@ class IUController(IUBase):
         for zone in self._zones:
             if zone.is_enabled:
                 zone_status |= zone.muster_schedules(stime)
+
+        # Deconflict overlapping zone runs when interleave is enabled
+        if self._interleave:
+            if self._deconflict_zones(stime):
+                zone_status |= IURQStatus.EXTENDED
 
         # Post processing
         for sequence in self._sequences:
