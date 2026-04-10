@@ -51,6 +51,7 @@ from .const import (
     CONF_HISTORY_REFRESH,
     CONF_HISTORY_SPAN,
     CONF_INCREASE,
+    CONF_INTERLEAVE,
     CONF_MAXIMUM,
     CONF_MAX_LOG_ENTRIES,
     CONF_MINIMUM,
@@ -323,6 +324,7 @@ CONTROLLER_SCHEMA = vol.Schema(
         vol.Optional(CONF_VOLUME): vol.All(VOLUME_SCHEMA),
         vol.Optional(CONF_USER): vol.All(USER_SCHEMA),
         vol.Optional(CONF_SHOW_SEQUENCE_STATUS): cv.boolean,
+        vol.Optional(CONF_INTERLEAVE): cv.boolean,
     }
 )
 
