@@ -1,0 +1,121 @@
+irrigation_unlimited:
+  refresh_interval: 10
+  controllers:
+    # Test 1: Basic interleave with 3 zones, repeat + delay
+    # Without interleave this would run sequentially:
+    #   z1: 3x (1min on + 2min delay) = 9 min
+    #   z2: 2x (2min on + 3min delay) = 10 min
+    #   z3: 2x (1min on + 2min delay) = 6 min
+    #   Total sequential: 25 min
+    #
+    # With interleave, all zones start at the same time and
+    # deconfliction ensures only one is on at a time, filling
+    # the delay gaps with other zones' runs.
+    - name: "Test controller 1"
+      interleave: true
+      zones:
+        - name: "Zone 1"
+        - name: "Zone 2"
+        - name: "Zone 3"
+      sequences:
+        - name: "Interleaved sequence"
+          schedules:
+            - name: "Morning"
+              time: "06:00"
+          zones:
+            - zone_id: 1
+              duration: "0:01:00"
+              delay: "0:02:00"
+              repeat: 3
+            - zone_id: 2
+              duration: "0:02:00"
+              delay: "0:03:00"
+              repeat: 2
+            - zone_id: 3
+              duration: "0:01:00"
+              delay: "0:02:00"
+              repeat: 2
+
+    # Test 2: Same config but WITHOUT interleave (sequential) for comparison
+    - name: "Test controller 2"
+      zones:
+        - name: "Zone 1"
+        - name: "Zone 2"
+        - name: "Zone 3"
+      sequences:
+        - name: "Sequential sequence"
+          schedules:
+            - name: "Morning"
+              time: "06:00"
+          zones:
+            - zone_id: 1
+              duration: "0:01:00"
+              delay: "0:02:00"
+              repeat: 3
+            - zone_id: 2
+              duration: "0:02:00"
+              delay: "0:03:00"
+              repeat: 2
+            - zone_id: 3
+              duration: "0:01:00"
+              delay: "0:02:00"
+              repeat: 2
+
+  testing:
+    enabled: true
+    speed: 1.0
+    show_log: true
+    autoplay: false
+    times:
+      - name: "1-Interleave run"
+        start: "2026-04-10 05:55"
+        end: "2026-04-10 07:00"
+        results:
+          # c1 (interleave): 10 min total — zones fill each other's delay gaps
+          # c2 (sequential): 23 min total — zones run one after another
+          - {t: '2026-04-10 06:00:00', c: 1, z: 0, s: 1}
+          - {t: '2026-04-10 06:00:00', c: 1, z: 1, s: 1}
+          - {t: '2026-04-10 06:00:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:00:00', c: 2, z: 1, s: 1}
+          - {t: '2026-04-10 06:01:00', c: 1, z: 1, s: 0}
+          - {t: '2026-04-10 06:01:00', c: 1, z: 2, s: 1}
+          - {t: '2026-04-10 06:01:00', c: 2, z: 1, s: 0}
+          - {t: '2026-04-10 06:01:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:03:00', c: 1, z: 2, s: 0}
+          - {t: '2026-04-10 06:03:00', c: 1, z: 3, s: 1}
+          - {t: '2026-04-10 06:03:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:03:00', c: 2, z: 1, s: 1}
+          - {t: '2026-04-10 06:04:00', c: 1, z: 3, s: 0}
+          - {t: '2026-04-10 06:04:00', c: 1, z: 1, s: 1}
+          - {t: '2026-04-10 06:04:00', c: 2, z: 1, s: 0}
+          - {t: '2026-04-10 06:04:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:05:00', c: 1, z: 1, s: 0}
+          - {t: '2026-04-10 06:05:00', c: 1, z: 0, s: 0}
+          - {t: '2026-04-10 06:06:00', c: 1, z: 0, s: 1}
+          - {t: '2026-04-10 06:06:00', c: 1, z: 3, s: 1}
+          - {t: '2026-04-10 06:06:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:06:00', c: 2, z: 1, s: 1}
+          - {t: '2026-04-10 06:07:00', c: 1, z: 3, s: 0}
+          - {t: '2026-04-10 06:07:00', c: 1, z: 2, s: 1}
+          - {t: '2026-04-10 06:07:00', c: 2, z: 1, s: 0}
+          - {t: '2026-04-10 06:07:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:09:00', c: 1, z: 2, s: 0}
+          - {t: '2026-04-10 06:09:00', c: 1, z: 1, s: 1}
+          - {t: '2026-04-10 06:09:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:09:00', c: 2, z: 2, s: 1}
+          - {t: '2026-04-10 06:10:00', c: 1, z: 1, s: 0}
+          - {t: '2026-04-10 06:10:00', c: 1, z: 0, s: 0}
+          - {t: '2026-04-10 06:11:00', c: 2, z: 2, s: 0}
+          - {t: '2026-04-10 06:11:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:14:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:14:00', c: 2, z: 2, s: 1}
+          - {t: '2026-04-10 06:16:00', c: 2, z: 2, s: 0}
+          - {t: '2026-04-10 06:16:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:19:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:19:00', c: 2, z: 3, s: 1}
+          - {t: '2026-04-10 06:20:00', c: 2, z: 3, s: 0}
+          - {t: '2026-04-10 06:20:00', c: 2, z: 0, s: 0}
+          - {t: '2026-04-10 06:22:00', c: 2, z: 0, s: 1}
+          - {t: '2026-04-10 06:22:00', c: 2, z: 3, s: 1}
+          - {t: '2026-04-10 06:23:00', c: 2, z: 3, s: 0}
+          - {t: '2026-04-10 06:23:00', c: 2, z: 0, s: 0}
