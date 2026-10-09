@@ -1,8 +1,6 @@
 # Agent guide — irrigation_unlimited
 
-Primary, tool-agnostic agent guide (read by Cursor, Claude Code, Copilot, Codex, etc.). This file is repo-wide orientation.
-
-**There are no nested `AGENTS.md` files** — the integration is a single Python package with no subsystem deep enough to warrant one yet. Everything lives here.
+Primary agent guide for this repo. No nested `AGENTS.md` files — the integration is a single Python package; everything lives here.
 
 ## What this is
 
@@ -10,66 +8,44 @@ A **Home Assistant custom integration** (Python, distributed via **HACS**) that 
 
 It is one half of a **backend/frontend pair**:
 
-- **`irrigation-unlimited-card`** (sibling repo, `home-assistant/irrigation-unlimited-card`) — the Lovelace card that visualizes/controls this integration. It reads this integration's **entity attributes** and calls its **services**.
-- **`ha-assets`** (sibling repo) — the live HA config; its dashboards, `packages/`, automations, and template sensors consume this integration's **entities, attributes, services, and events**.
+- **`irrigation-unlimited-card`** — the Lovelace card that visualizes/controls this integration (reads its **entity attributes**, calls its **services**).
+- **`ha-assets`** — the live HA config; dashboards, `packages/`, automations and template sensors consume the **entities, attributes, services and events**.
 
-A change to this integration's entity/attribute/service/event shape usually requires a matching change in the card and can silently break dashboards/automations in `ha-assets`. See **Ripple awareness** below.
+A shape change here usually needs a matching card change and can silently break `ha-assets`. See **Ripple awareness**.
 
 ### Fork status (important)
 
-This repo is a **fork of the upstream HACS integration `rgc99/irrigation_unlimited`** (origin remote: `github.com:nantomarioni/irrigation_unlimited`; `manifest.json`/`const.py` still point `documentation`/`issue_tracker`/`codeowners` at `rgc99`). It has **local divergence from upstream** — at minimum:
+Fork of the upstream HACS integration **`rgc99/irrigation_unlimited`** (`manifest.json`/`const.py` still point `documentation`/`issue_tracker`/`codeowners` at `rgc99`). Intentional local divergence:
 
-- A local feature commit `feat: add interleave option for parallel zone scheduling` (the `interleave` config option) at HEAD.
-- `manifest.json` here sets **`config_flow: false`** whereas upstream `master` sets `config_flow: true`. This integration is **YAML-configured** (`CONFIG_SCHEMA` under the `irrigation_unlimited:` key in `configuration.yaml`); there is **no UI config flow** in this fork.
+- The **`interleave`** config option (`CONF_INTERLEAVE`, parallel zone scheduling).
+- **`config_flow: false`** — YAML-configured only (`IRRIGATION_SCHEMA` under the `irrigation_unlimited:` key); upstream has a UI config flow.
 
-When changing behavior, prefer keeping parity with upstream where practical, but treat the local changes (interleave, YAML-only setup) as intentional. If you pull from upstream, re-check `config_flow` and the `interleave` option don't get clobbered. *(There is no `upstream` git remote configured; add one if you need to diff against `rgc99/irrigation_unlimited`.)*
+Keep parity with upstream where practical; when pulling upstream, re-check neither gets clobbered. No `upstream` git remote is configured — add one to diff.
 
 ## How to run things
 
-There is **no tox/nox/Makefile/pre-commit**. Use a venv + the requirements files. (`scripts/setup` and `scripts/develop` are for running a live HA dev instance, not for tests — `scripts/setup` also runs `npm install`, which is unrelated to the Python integration.)
+No tox/nox/Makefile/pre-commit — a venv + the requirements files (`scripts/setup` / `scripts/develop` run a live HA dev instance, not tests).
 
 ```bash
-# One-time: create + activate a venv and install test deps
-python3 -m venv venv
-source venv/bin/activate
-pip3 install -r requirements_test.txt   # pulls homeassistant + pytest-homeassistant-custom-component, crontab, etc.
-
-# Run the full test suite (config is in pytest.ini: testpaths=tests, asyncio_mode=auto, --cov)
-pytest tests/
-
-# CI-equivalent invocation (see .github/workflows/pull.yml)
-pytest -qq --timeout=300 --durations=10 -n auto \
-  --cov custom_components.irrigation_unlimited \
-  -o console_output_style=count -p no:sugar tests
-
-# Run a single file / single test
-pytest tests/test_service.py
+python3 -m venv venv && source venv/bin/activate && pip3 install -r requirements_test.txt
+pytest tests/                                   # pytest.ini: testpaths=tests, asyncio_mode=auto, --cov
+pytest -qq --timeout=300 --durations=10 -n auto --cov custom_components.irrigation_unlimited \
+  -o console_output_style=count -p no:sugar tests   # CI-equivalent (.github/workflows/pull.yml)
 pytest tests/test_service.py -k test_service_adjust_time
-
-# Coverage with missing-line report
-pytest --durations=10 --cov-report term-missing \
-  --cov=custom_components.irrigation_unlimited tests
+black .                                         # the only linter CI runs
+scripts/develop                                 # optional: hass --config ./config --debug
 ```
 
-- `requirements.txt` pins `homeassistant==2025.3.1` (used by `scripts/develop` for a live instance); `requirements_test.txt` pins `pytest-homeassistant-custom-component==0.13.222` plus `aiohttp_cors`, `crontab`, `pytest-asyncio`. The CI runs tests on **Python 3.13**.
-- **Linting/formatting**: CI uses **`black`** (`python3 -m pip install black && black .`). `setup.cfg` also configures **flake8** (max-line-length 88, ignores E501/W503/E203/D202/W504) and **isort** (`known_first_party = custom_components.irrigation_unlimited`), but only `black` runs in CI. There is no `mypy`/type-check step.
+`requirements_test.txt` pins `pytest-homeassistant-custom-component==0.13.222`; CI tests on **Python 3.13**. `setup.cfg` configures flake8/isort too, but only `black` runs in CI; no mypy.
 
-### Live dev instance (optional)
+## Quality gate
 
-```bash
-scripts/develop   # boots `hass --config ./config --debug` with custom_components on PYTHONPATH
-```
+Mirrors `.github/workflows/pull.yml` (PRs) and `push.yml` (`master`/`dev`); `cron.yaml` runs the two validations nightly:
 
-This is for manual testing against a real HA, not part of the quality gate.
-
-## Quality gate (must pass before declaring done)
-
-These mirror `.github/workflows/pull.yml` (PRs) and `push.yml` (`master`/`dev`), which run the same four checks; `cron.yaml` runs the two validate-only checks nightly:
-
-1. **Tests** — `pytest tests/` green (the bulk are timing/regression tests via the virtual-clock harness; see `tests/README.md`). The CI invocation adds `-n auto`, `--timeout=300` (pull) / `--timeout=600` (push, which also passes `--asyncio-mode=auto`), and `--cov`.
+1. **Tests** — `pytest tests/` green (mostly timing/regression tests on the virtual-clock harness; `tests/README.md`).
 2. **Formatting** — `black .` clean.
-3. **HACS validation** — CI runs `hacs/action@main` (`category: integration`, `ignore: brands`). Keep `hacs.json` + `manifest.json` valid.
-4. **Hassfest validation** — CI runs `home-assistant/actions/hassfest`. Keep `manifest.json` well-formed (domain, version, requirements, dependencies, etc.).
+3. **HACS validation** — `hacs/action@main` (`category: integration`, `ignore: brands`): keep `hacs.json` + `manifest.json` valid.
+4. **Hassfest** — the official `hassfest` GitHub Action: keep `manifest.json` well-formed.
 
 Per `tests/README.md`: **don't change existing tests unless you're certain the expected result is wrong** — they exist for backward-compat. New functionality should add a test (use `tests/test_model.py` + `tests/configs/test_model.yaml` as the template).
 
@@ -119,7 +95,7 @@ custom_components/irrigation_unlimited/
 └── translations/en.json     # UI strings (en only)
 ```
 
-Around the package, the repo root also holds `tests/` (the virtual-clock harness + `tests/README.md`), `scripts/` (`setup`/`develop` for a live HA dev instance), `examples/` and `lovelace/` (sample YAML configs + cards), `requirements.txt` / `requirements_test.txt`, `pytest.ini`, `setup.cfg` (flake8 + isort), `hacs.json`, and the `.github/workflows/` (`pull.yml`, `push.yml`, `cron.yaml`).
+Repo root: `tests/` (virtual-clock harness + `tests/README.md`), `scripts/`, `examples/` + `lovelace/` (sample configs + cards), `packages/` + `pyscript/`, `pytest.ini`, `setup.cfg`, `hacs.json`, `.github/workflows/`.
 
 ## Adding / changing a feature — walkthrough
 
@@ -141,18 +117,18 @@ The chain depends on what you're touching; the cross-repo step (5) is the one th
 
 **Bumping the release** (HACS): bump `manifest.json` `version` **and** `const.py` `VERSION` together (calendar version), keep them equal.
 
-## Ripple awareness (the integration ↔ card ↔ ha-assets contract)
+## Ripple awareness
 
-- **`irrigation_unlimited` ↔ `irrigation-unlimited-card`** are a backend/frontend pair built around the entity-attribute + service contract above. The card reads attributes (`timeline`, `current_adjustment`, `next_adjustment`, `adjustment`, status, etc.) and calls services (`adjust_time`, `enable`, `disable`, `manual_run`, …). Any change to attribute names/shapes, the `timeline` item shape, entity-id format, or service field names/selectors must be mirrored in the card. Check the card before declaring an entity/service/attribute change done.
-- **`ha-assets`** consumes this integration's entities/attributes/services/events in dashboards, `packages/`, template sensors, and automations. Renaming an entity, attribute, service, or event can break those dashboards silently (no compile error — just empty cards or dead automations). The repo's own `tests/README.md` warns the integration runs on a virtual clock but `recorder`/`history` log in real time.
-- **HACS distribution**: both this integration and the card are distributed via HACS. Respect calendar-version release discipline (keep `manifest.json`/`const.py` versions in lockstep) so HACS surfaces the update.
+Open the other side before declaring a contract change done.
 
-See also `home-assistant/AGENTS.md` (group-level ripple notes) one directory up.
+- **`irrigation-unlimited-card`** — github.com/nantomarioni/irrigation-unlimited-card — expected at `../irrigation-unlimited-card`. Backend/frontend pair around the surface above: the card (`src/irrigation-unlimited-card.ts`) reads attributes (`timeline`, `current_adjustment`, `next_adjustment`, `adjustment`, status…) and calls services (`adjust_time`, `enable`, `disable`, `manual_run`, …). Attribute names/shapes, the `timeline` item shape, the entity-id format and service field names/selectors must be mirrored there.
+- **`ha-assets`** — github.com/nantomarioni/ha-assets — expected at `../ha-assets`. Consumes entities/attributes in dashboards and its own `cards/irrigation-status` + `cards/irrigation-config`, and `automations/swv.yaml` listens for the **`irrigation_unlimited_valve_on`** event (fields `entity_id`, `duration`) to drive Zigbee valves. Renames break it silently (empty cards, dead automations). Verified against `2025.12.0`.
+- **HACS**: both repos release by calendar version; keep `manifest.json`/`const.py` in lockstep so HACS surfaces the update.
 
 ## When stuck
 
 - **HA integration mechanics** (manifest, platforms, services, entities): Home Assistant developer docs — https://developers.home-assistant.io/ .
 - **This integration's behavior / config options**: the repo `README.md` (large, authoritative) and `info.md`; `examples/` (full YAML configs like `all_the_bells_and_whistles.yaml`) and `lovelace/` (sample cards).
 - **Test framework** (`IUExam`, virtual clock, result objects): `tests/README.md` and `tests/iu_test_support.py`; template `tests/test_model.py` + `tests/configs/test_model.yaml`.
-- **The card contract**: the sibling `home-assistant/irrigation-unlimited-card` (`src/irrigation-unlimited-card.ts`).
+- **The card contract**: `../irrigation-unlimited-card/src/irrigation-unlimited-card.ts`.
 - **Upstream comparison**: `rgc99/irrigation_unlimited` (no git remote configured here — add one to diff).
