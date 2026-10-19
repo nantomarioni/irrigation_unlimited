@@ -1,6 +1,6 @@
 """This module handles the HA service call interface"""
 
-from homeassistant.core import ServiceCall, SupportsResponse, ServiceResponse, callback
+from homeassistant.core import ServiceCall, SupportsResponse, ServiceResponse
 from homeassistant.util import dt
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_component import EntityComponent
@@ -17,7 +17,7 @@ from .entity import IUEntity
 from .schema import (
     CANCEL_SCHEMA,
     ENABLE_DISABLE_SCHEMA,
-    ENTITY_SCHEMA,
+    SKIP_SCHEMA,
     GET_STATUS_SCHEMA,
     LOAD_SCHEDULE_SCHEMA,
     MANUAL_RUN_SCHEMA,
@@ -42,6 +42,7 @@ from .const import (
     SERVICE_CANCEL,
     SERVICE_DISABLE,
     SERVICE_ENABLE,
+    SERVICE_EXPORT_CONFIG,
     SERVICE_GET_INFO,
     SERVICE_GET_STATUS,
     SERVICE_LOAD_SCHEDULE,
@@ -55,7 +56,6 @@ from .const import (
 )
 
 
-@callback
 async def async_entity_service_handler(
     entity: IUEntity, call: ServiceCall
 ) -> ServiceResponse:
@@ -87,7 +87,7 @@ def register_platform_services(platform: entity_platform.EntityPlatform) -> None
         SERVICE_SUSPEND, SUSPEND_SCHEMA, async_entity_service_handler
     )
     platform.async_register_entity_service(
-        SERVICE_SKIP, ENTITY_SCHEMA, async_entity_service_handler
+        SERVICE_SKIP, SKIP_SCHEMA, async_entity_service_handler
     )
 
     platform.async_register_entity_service(
@@ -104,15 +104,13 @@ def register_component_services(
 ) -> None:
     """Register the component"""
 
-    @callback
     async def reload_service_handler(call: ServiceCall) -> None:
         """Reload yaml entities."""
         # pylint: disable=unused-argument
-        # pylint: disable=import-outside-toplevel
         from .binary_sensor import async_reload_platform
 
         conf = await component.async_prepare_reload(skip_reset=True)
-        if conf is None or conf == {}:
+        if conf is None or DOMAIN not in conf:
             conf = {DOMAIN: {}}
         coordinator.load(conf[DOMAIN])
         await async_reload_platform(component, coordinator)
@@ -127,7 +125,6 @@ def register_component_services(
         schema=RELOAD_SERVICE_SCHEMA,
     )
 
-    @callback
     async def coordinator_service_handler(call: ServiceCall) -> ServiceResponse:
         """Reload schedule."""
         return coordinator.service_call(call.service, None, None, None, call.data)
@@ -139,7 +136,6 @@ def register_component_services(
         LOAD_SCHEDULE_SCHEMA,
     )
 
-    @callback
     async def get_info_service_handler(call: ServiceCall) -> ServiceResponse:
         """Return configuration"""
         # pylint: disable=unused-argument
@@ -185,7 +181,6 @@ def register_component_services(
         supports_response=SupportsResponse.ONLY,
     )
 
-    @callback
     async def get_status_service_handler(call: ServiceCall) -> ServiceResponse:
         """Return configuration"""
         # pylint: disable=unused-argument
@@ -199,5 +194,18 @@ def register_component_services(
         SERVICE_GET_STATUS,
         get_status_service_handler,
         GET_STATUS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def export_config_service_handler(call: ServiceCall) -> ServiceResponse:
+        """Return the current config in configuration.yaml-compatible format"""
+        # pylint: disable=unused-argument
+        return convert_data(coordinator.export_config())
+
+    component.hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_CONFIG,
+        export_config_service_handler,
+        {},
         supports_response=SupportsResponse.ONLY,
     )

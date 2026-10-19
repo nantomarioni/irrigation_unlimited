@@ -35,16 +35,24 @@ input_datetime:
 
 automation:
   - alias: Irrigation Unlimited Load UI Controls
+    id: '1778708560272'
     triggers:
       - trigger: homeassistant
         event: start
+      - trigger: event
+        event_type: service_registered
+        event_data:
+          domain: irrigation_unlimited
+          service: list_config
     actions:
       - action: irrigation_unlimited.list_config
+        continue_on_error: true
         data:
           entity_id: input_select.irrigation_unlimited_entities
           section: entities
           first: <none>
       - action: irrigation_unlimited.list_config
+        continue_on_error: true
         data:
           entity_id: input_select.irrigation_unlimited_sequences
           section: sequences

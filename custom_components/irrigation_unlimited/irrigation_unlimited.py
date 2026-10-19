@@ -144,6 +144,7 @@ from .const import (
     CONF_MONTH,
     CONF_ODD,
     CONF_OUTPUT_EVENTS,
+    CONF_PAUSE_NEXT,
     CONF_PERCENTAGE,
     CONF_POSTAMBLE,
     CONF_PREAMBLE,
@@ -648,7 +649,7 @@ class IUSchedule(IUBase):
         self._coordinator = coordinator
         # Config parameters
         self._schedule_id: str = None
-        self._time: time | dict = None
+        self._start_time: time | dict = None
         self._duration: timedelta = None
         self._name: str = None
         self._weekdays: list[int] = None
@@ -676,6 +677,26 @@ class IUSchedule(IUBase):
         return True
 
     @property
+    def start_time(self) -> time | dict:
+        """Return the start time of the schedule"""
+        return self._start_time
+
+    @property
+    def weekdays(self) -> list[int]:
+        """Return the week days of the schedule"""
+        return self._weekdays
+
+    @property
+    def days(self):
+        """Return the days of the month to run"""
+        return self._days
+
+    @property
+    def months(self) -> list[int]:
+        """Return the months of the year to run"""
+        return self._months
+
+    @property
     def duration(self) -> timedelta:
         """Return the duration"""
         return self._duration
@@ -685,11 +706,16 @@ class IUSchedule(IUBase):
         """Return enabled status"""
         return self._enabled
 
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        """Set the enabled state"""
+        self._enabled = value
+
     def load(self, config: OrderedDict, update: bool = False) -> "IUSchedule":
         """Load schedule data from config"""
         if not update:
             self._schedule_id = None
-            self._time = None
+            self._start_time = None
             self._duration = None
             self._name = f"Schedule {self.index + 1}"
             self._weekdays = None
@@ -700,9 +726,17 @@ class IUSchedule(IUBase):
             self._until = None
 
         self._schedule_id = config.get(CONF_SCHEDULE_ID, self.schedule_id)
-        self._time = config.get(CONF_TIME, self._time)
+        raw_time = config.get(CONF_TIME, self._start_time)
+        # Config entry data is JSON so time arrives as a string; parse it to a time object
+        if isinstance(raw_time, str):
+            raw_time = cv.time(raw_time)
+        self._start_time = raw_time
         self._anchor = config.get(CONF_ANCHOR, self._anchor)
-        self._duration = wash_td(config.get(CONF_DURATION, self._duration))
+        raw_duration = config.get(CONF_DURATION, self._duration)
+        # Config entry data is JSON so duration arrives as a string; parse it to a timedelta
+        if isinstance(raw_duration, str):
+            raw_duration = cv.positive_time_period(raw_duration)
+        self._duration = wash_td(raw_duration)
         self._name = config.get(CONF_NAME, self._name)
         self._enabled = config.get(CONF_ENABLED, self._enabled)
 
@@ -717,6 +751,14 @@ class IUSchedule(IUBase):
                 self._months.append(MONTHS.index(i) + 1)
 
         self._days = config.get(CONF_DAY, self._days)
+        # Config entry data is JSON-serialised so dates arrive as ISO strings
+        if isinstance(self._days, dict) and CONF_START_N_DAYS in self._days:
+            start = self._days[CONF_START_N_DAYS]
+            if isinstance(start, str):
+                self._days = {
+                    **self._days,
+                    CONF_START_N_DAYS: date.fromisoformat(start),
+                }
         self._from = config.get(CONF_FROM, self._from)
         self._until = config.get(CONF_UNTIL, self._until)
 
@@ -726,7 +768,7 @@ class IUSchedule(IUBase):
         """Return the schedule as a dict"""
         result = OrderedDict()
 
-        result[CONF_TIME] = self._time
+        result[CONF_TIME] = self._start_time
         result[CONF_ANCHOR] = self._anchor
         result[CONF_DURATION] = self._duration
         result[CONF_NAME] = self._name
@@ -745,7 +787,7 @@ class IUSchedule(IUBase):
         ftime: datetime,
         adjusted_duration: timedelta,
         is_running: bool,
-    ) -> datetime:
+    ) -> datetime | None:
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-statements
         # pylint: disable=too-many-locals
@@ -820,25 +862,25 @@ class IUSchedule(IUBase):
                     continue
 
             # Adjust time component
-            if isinstance(self._time, time):
+            if isinstance(self._start_time, time):
                 next_run = datetime.combine(
-                    next_run.date(), self._time, next_run.tzinfo
+                    next_run.date(), self._start_time, next_run.tzinfo
                 )
-            elif isinstance(self._time, dict) and CONF_SUN in self._time:
+            elif isinstance(self._start_time, dict) and CONF_SUN in self._start_time:
                 sun_event = sun.get_astral_event_date(
-                    self._hass, self._time[CONF_SUN], next_run
+                    self._hass, self._start_time[CONF_SUN], next_run
                 )
                 if sun_event is None:
                     continue  # Astral event did not occur today
 
                 next_run = dt.as_local(sun_event)
-                if CONF_AFTER in self._time:
-                    next_run += self._time[CONF_AFTER]
-                if CONF_BEFORE in self._time:
-                    next_run -= self._time[CONF_BEFORE]
-            elif isinstance(self._time, dict) and CONF_CRON in self._time:
+                if CONF_AFTER in self._start_time:
+                    next_run += self._start_time[CONF_AFTER]
+                if CONF_BEFORE in self._start_time:
+                    next_run -= self._start_time[CONF_BEFORE]
+            elif isinstance(self._start_time, dict) and CONF_CRON in self._start_time:
                 try:
-                    cron = CronTab(self._time[CONF_CRON])
+                    cron = CronTab(self._start_time[CONF_CRON])
                     cron_event = cron.next(
                         now=local_time, return_datetime=True, default_utc=True
                     )
@@ -847,23 +889,24 @@ class IUSchedule(IUBase):
                     next_run = dt.as_local(cron_event)
                 except ValueError as error:
                     self._coordinator.logger.log_invalid_crontab(
-                        stime, self, self._time[CONF_CRON], error
+                        stime, self, self._start_time[CONF_CRON], error
                     )
                     self._enabled = False  # Shutdown this schedule
                     return None
             else:  # Some weird error happened
                 return None
 
+            # Handle the next section in UTC to avoid midnight and DST time change over issues
+            next_run_utc = dt.as_utc(next_run)
             if self._anchor == CONF_FINISH:
-                next_run -= adjusted_duration
+                next_run_utc -= adjusted_duration
 
-            next_run = wash_dt(next_run)
-            if (is_running and next_run > local_time) or (
-                not is_running and next_run + adjusted_duration > local_time
+            next_run_utc = wash_dt(next_run_utc)
+            if (is_running and next_run_utc > stime) or (
+                not is_running and next_run_utc + adjusted_duration > stime
             ):
-                break
-
-        return dt.as_utc(next_run)
+                return next_run_utc
+            next_run = dt.as_local(next_run_utc)
 
 
 class IUSwitch:
@@ -1710,9 +1753,10 @@ class IURunQueue(list[IURun]):
         self._sorted = False
         return run
 
-    def cancel(self, stime: datetime) -> None:
+    def cancel(self, stime: datetime) -> bool:
         """Flag the current run to be cancelled"""
         self._cancel_request = stime
+        return True
 
     def clear_all(self) -> None:
         """Clear out all runs"""
@@ -2262,6 +2306,11 @@ class IUZone(IUBase):
         """Return the arbitrary user information"""
         return self._user
 
+    @property
+    def duration(self) -> timedelta:
+        """Return the duration of this zone"""
+        return self._duration
+
     def _is_setup(self) -> bool:
         """Check if this object is setup"""
         self._initialised = self._zone_sensor is not None
@@ -2321,7 +2370,7 @@ class IUZone(IUBase):
             self._coordinator.logger.log_sequence_entity(stime)
         return self._adjustment.load(data)
 
-    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> None:
+    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> bool:
         """Add a manual run."""
         if self._allow_manual or (self.is_enabled and self._controller.is_enabled):
             duration = wash_td(data.get(CONF_TIME))
@@ -2330,7 +2379,7 @@ class IUZone(IUBase):
             if duration is None or duration == TD_ZERO:
                 duration = self._duration
                 if duration is None:
-                    return
+                    return False
                 duration = self._adjustment.adjust(duration)
             self._run_queue.add_manual(
                 stime,
@@ -2339,11 +2388,13 @@ class IUZone(IUBase):
                 self,
                 queue,
             )
+            return True
+        return False
 
-    def service_cancel(self, data: MappingProxyType, stime: datetime) -> None:
+    def service_cancel(self, data: MappingProxyType, stime: datetime) -> bool:
         """Cancel the current running schedule"""
         # pylint: disable=unused-argument
-        self._run_queue.cancel(stime)
+        return self._run_queue.cancel(stime)
 
     def add(self, schedule: IUSchedule) -> IUSchedule:
         """Add a new schedule to the zone"""
@@ -2754,8 +2805,14 @@ class IUSequenceZone(IUBase):
                     self._zones.append(zone)
 
         self._zone_ids = config[CONF_ZONE_ID]
-        self._delay = wash_td(config.get(CONF_DELAY))
-        self._duration = wash_td(config.get(CONF_DURATION))
+        raw_delay = config.get(CONF_DELAY)
+        if isinstance(raw_delay, str):
+            raw_delay = cv.positive_time_period(raw_delay)
+        self._delay = wash_td(raw_delay)
+        raw_duration = config.get(CONF_DURATION)
+        if isinstance(raw_duration, str):
+            raw_duration = cv.positive_time_period(raw_duration)
+        self._duration = wash_td(raw_duration)
         self._repeat = config.get(CONF_REPEAT, 1)
         self._enabled = config.get(CONF_ENABLED, self._enabled)
         self._volume = config.get(CONF_VOLUME, self._volume)
@@ -4118,8 +4175,14 @@ class IUSequence(IUBase):
         self.clear()
         self._sequence_id = config.get(CONF_SEQUENCE_ID, str(self.index + 1))
         self._name = config.get(CONF_NAME, f"Run {self.index + 1}")
-        self._delay = wash_td(config.get(CONF_DELAY))
-        self._duration = wash_td(config.get(CONF_DURATION))
+        raw_delay = config.get(CONF_DELAY)
+        if isinstance(raw_delay, str):
+            raw_delay = cv.positive_time_period(raw_delay)
+        self._delay = wash_td(raw_delay)
+        raw_duration = config.get(CONF_DURATION)
+        if isinstance(raw_duration, str):
+            raw_duration = cv.positive_time_period(raw_duration)
+        self._duration = wash_td(raw_duration)
         self._repeat = config.get(CONF_REPEAT, 1)
         self._enabled = config.get(CONF_ENABLED, self._enabled)
         zidx: int = 0
@@ -4316,7 +4379,7 @@ class IUSequence(IUBase):
             self._run_queue.clear_runs()
         return changed
 
-    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> None:
+    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> bool:
         """Service handler for manual_run"""
         duration = wash_td(data.get(CONF_TIME))
         delay = wash_td(data.get(CONF_DELAY, TD_ZERO))
@@ -4330,6 +4393,7 @@ class IUSequence(IUBase):
             None,
             duration,
         )
+        return True
 
     def service_cancel(self, data: MappingProxyType, stime: datetime) -> bool:
         """Cancel the sequence"""
@@ -4369,6 +4433,15 @@ class IUSequence(IUBase):
             ):
                 sqr.pause(stime)
                 changed = True
+
+        # If nothing is currently active then pause the next scheduled run.
+        if (
+            not changed
+            and self._controller._pause_next
+            and self._run_queue.next_run is not None
+        ):
+            self._run_queue.next_run.pause(stime)
+            changed = True
         return changed
 
     def service_resume(self, data: MappingProxyType, stime: datetime) -> bool:
@@ -4419,6 +4492,7 @@ class IUController(IUBase):
         self._postamble: timedelta = None
         self._queue_manual: bool = False
         self._show_sequence_status: bool = True
+        self._pause_next: bool = False
         self._interleave: bool = False
         # Private variables
         self._initialised: bool = False
@@ -4590,6 +4664,11 @@ class IUController(IUBase):
         """Return the volume for this zone"""
         return self._volume
 
+    @property
+    def switch(self) -> IUSwitch:
+        """Return the switch component"""
+        return self._switch
+
     def _status(self) -> str:
         """Return status of the controller"""
         if self._initialised:
@@ -4707,6 +4786,7 @@ class IUController(IUBase):
         self._preamble = wash_td(config.get(CONF_PREAMBLE))
         self._postamble = wash_td(config.get(CONF_POSTAMBLE))
         self._queue_manual = config.get(CONF_QUEUE_MANUAL, self._queue_manual)
+        self._pause_next = config.get(CONF_PAUSE_NEXT, self._pause_next)
         self._show_sequence_status = config.get(
             CONF_SHOW_SEQUENCE_STATUS, self._show_sequence_status
         )
@@ -4810,7 +4890,7 @@ class IUController(IUBase):
             schedule: IUSchedule,
             zone: IUZone,
             total_duration: timedelta,
-        ) -> datetime:
+        ) -> datetime | None:
             def is_running(sequence: IUSequence, schedule: IUSchedule) -> bool:
                 """Return True is this sequence & schedule is currently running"""
                 for srn in sequence.runs:
@@ -5297,17 +5377,19 @@ class IUController(IUBase):
                 self.request_update(True)
         return changed
 
-    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> None:
+    def service_manual_run(self, data: MappingProxyType, stime: datetime) -> bool:
         """Handler for the manual_run service call"""
+        changed = False
         sequence_list = self.decode_sequence_id(stime, data.get(CONF_SEQUENCE_ID))
         if sequence_list is None:
             zone_list = self.decode_zone_id(stime, data.get(CONF_ZONES, None))
             for zone in self._zones:
                 if zone_list is None or zone.index in zone_list:
-                    zone.service_manual_run(data, stime)
+                    changed |= zone.service_manual_run(data, stime)
         else:
             for sequence in (self.get_sequence(sqid) for sqid in sequence_list):
-                sequence.service_manual_run(data, stime)
+                changed |= sequence.service_manual_run(data, stime)
+        return changed
 
     def service_cancel(self, data: MappingProxyType, stime: datetime) -> bool:
         """Handler for the cancel service call"""
@@ -5317,8 +5399,7 @@ class IUController(IUBase):
         if sequence_list is None:
             for zone in self._zones:
                 if zone_list is None or zone.index + 1 in zone_list:
-                    zone.service_cancel(data, stime)
-                    changed = True
+                    changed |= zone.service_cancel(data, stime)
         else:
             for sequence in (self.get_sequence(sqid) for sqid in sequence_list):
                 changed |= sequence.service_cancel(data, stime)
@@ -6655,6 +6736,97 @@ class IUCoordinator:
         result[CONF_CONTROLLERS] = [ctr.as_dict(extended) for ctr in self._controllers]
         return result
 
+    def export_config(self) -> dict:
+        """Serialise the current config into configuration.yaml-compatible format."""
+
+        # pylint: disable=too-many-statements
+
+        def _fmt_td(td: timedelta | None) -> str | None:
+            if td is None:
+                return None
+            total = int(td.total_seconds())
+            h, rem = divmod(total, 3600)
+            m, s = divmod(rem, 60)
+            return f"{h}:{m:02d}:{s:02d}"
+
+        def _schedule(sch: IUSchedule) -> dict:
+            s = {}
+            if sch.name:
+                s[CONF_NAME] = sch.name
+            if sch.start_time is not None:
+                s[CONF_TIME] = (
+                    sch.start_time.strftime("%H:%M")
+                    if hasattr(sch.start_time, "strftime")
+                    else str(sch.start_time)
+                )
+            if sch.duration is not None:
+                s[CONF_DURATION] = _fmt_td(sch.duration)
+            if sch.weekdays is not None:
+                s[CONF_WEEKDAY] = [WEEKDAYS[d] for d in sch.weekdays]
+            if sch.months is not None:
+                s[CONF_MONTH] = [MONTHS[m - 1] for m in sch.months]
+            if sch.days is not None:
+                s[CONF_DAY] = sch.days
+            if not sch.enabled:
+                s[CONF_ENABLED] = False
+            return s
+
+        def _zone(zone: IUZone) -> dict:
+            z = {}
+            z[CONF_NAME] = zone.name
+            z[CONF_ZONE_ID] = zone.zone_id
+            switch_ids = zone.switch.switch_entity_id
+            if switch_ids:
+                z[CONF_ENTITY_ID] = (
+                    switch_ids[0] if len(switch_ids) == 1 else switch_ids
+                )
+            if zone.duration is not None:
+                z[CONF_DURATION] = _fmt_td(zone.duration)
+            if zone.schedules:
+                z[CONF_SCHEDULES] = [_schedule(s) for s in zone.schedules]
+            return z
+
+        def _sequence_zone(szn: IUSequenceZone) -> dict:
+            z = {}
+            if szn.zone_ids:
+                z[CONF_ZONE_ID] = (
+                    szn.zone_ids[0] if len(szn.zone_ids) == 1 else szn.zone_ids
+                )
+            if szn.duration is not None:
+                z[CONF_DURATION] = _fmt_td(szn.duration)
+            if szn.delay is not None:
+                z[CONF_DELAY] = _fmt_td(szn.delay)
+            if not szn.enabled:
+                z[CONF_ENABLED] = False
+            return z
+
+        def _sequence(seq: IUSequence) -> dict:
+            s = {}
+            s[CONF_NAME] = seq.name
+            if seq.duration is not None:
+                s[CONF_DURATION] = _fmt_td(seq.duration)
+            if seq.delay is not None:
+                s[CONF_DELAY] = _fmt_td(seq.delay)
+            s[CONF_ZONES] = [_sequence_zone(z) for z in seq.zones]
+            if seq.schedules:
+                s[CONF_SCHEDULES] = [_schedule(sch) for sch in seq.schedules]
+            return s
+
+        def _controller(ctl: IUController) -> dict:
+            c = {}
+            c[CONF_NAME] = ctl.name
+            switch_ids = ctl.switch.switch_entity_id
+            if switch_ids:
+                c[CONF_ENTITY_ID] = (
+                    switch_ids[0] if len(switch_ids) == 1 else switch_ids
+                )
+            c[CONF_ZONES] = [_zone(z) for z in ctl.zones]
+            if ctl.sequences:
+                c[CONF_SEQUENCES] = [_sequence(s) for s in ctl.sequences]
+            return c
+
+        return {CONF_CONTROLLERS: [_controller(c) for c in self._controllers]}
+
     def muster(self, stime: datetime, force: bool) -> IURQStatus:
         """Calculate run times for system"""
         status = IURQStatus(0)
@@ -6819,16 +6991,15 @@ class IUCoordinator:
             EVENT_HOMEASSISTANT_STOP, self._async_shutdown_listener
         )
 
-    def _replay_last_timer(self, atime: datetime) -> None:
-        """Update after a service call"""
+    def _update_all(self, atime: datetime) -> None:
+        """Force an update from the top. Simulates a clock tick. Used before and
+        after a service call to syncronise the system"""
         self.request_update(False)
         self._muster_required = True
         if self._tester.is_testing:
             tick = self._tester.ticker
-        elif self._last_tick is not None:
-            tick = self._last_tick
         else:
-            return
+            tick = atime
         self.timer(tick)
         self._clock.rearm(atime)
 
@@ -7060,7 +7231,7 @@ class IUCoordinator:
             result = dt.utcnow()
         return wash_dt(result)
 
-    def service_load_schedule(self, data: MappingProxyType) -> None:
+    def service_load_schedule(self, data: MappingProxyType) -> bool:
         """Handle the load_schedule service call"""
         # pylint: disable=too-many-nested-blocks
         for controller in self._controllers:
@@ -7074,14 +7245,15 @@ class IUCoordinator:
                                 runs.append(run)
                         for run in runs:
                             zone.runs.remove_run(run)
-                        return
+                        return True
 
             for sequence in controller.sequences:
                 for schedule in sequence.schedules:
                     if schedule.schedule_id == data[CONF_SCHEDULE_ID]:
                         schedule.load(data, True)
                         sequence.runs.clear_runs()
-                        return
+                        return True
+        return False
 
     def service_call(
         self,
@@ -7094,8 +7266,9 @@ class IUCoordinator:
         """Entry point for all service calls."""
         # pylint: disable=too-many-branches, too-many-statements
         # pylint: disable=too-many-arguments, too-many-positional-arguments
-        changed = True
+        changed = False
         stime = self.service_time()
+        self._update_all(stime)
 
         data1 = dict(data)
 
@@ -7120,7 +7293,7 @@ class IUCoordinator:
             if sequence is not None:
                 changed = sequence.service_cancel(data1, stime)
             elif zone is not None:
-                zone.service_cancel(data1, stime)
+                changed = zone.service_cancel(data1, stime)
             else:
                 changed = controller.service_cancel(data1, stime)
         elif service == SERVICE_TIME_ADJUST:
@@ -7140,40 +7313,39 @@ class IUCoordinator:
         elif service == SERVICE_MANUAL_RUN:
             render_positive_time_period(data1, CONF_TIME)
             if sequence is not None:
-                sequence.service_manual_run(data1, stime)
+                changed = sequence.service_manual_run(data1, stime)
             elif zone is not None:
-                zone.service_manual_run(data1, stime)
+                changed = zone.service_manual_run(data1, stime)
             else:
-                controller.service_manual_run(data1, stime)
+                changed = controller.service_manual_run(data1, stime)
         elif service == SERVICE_SKIP:
             if sequence is not None:
-                sequence.service_skip(data1, stime)
+                changed = sequence.service_skip(data1, stime)
         elif service == SERVICE_PAUSE:
             if sequence is not None:
                 changed = sequence.service_pause(data1, stime)
             elif zone is not None:
                 pass
             else:
-                controller.service_pause(data1, stime)
+                changed = controller.service_pause(data1, stime)
         elif service == SERVICE_RESUME:
             if sequence is not None:
                 changed = sequence.service_resume(data1, stime)
             elif zone is not None:
                 pass
             else:
-                controller.service_resume(data1, stime)
+                changed = controller.service_resume(data1, stime)
         elif service == SERVICE_LOAD_SCHEDULE:
             render_positive_time_period(data1, CONF_DURATION)
-            self.service_load_schedule(data1)
+            changed = self.service_load_schedule(data1)
         else:
             return None
 
         if changed:
-            self._last_tick = stime
             self._logger.log_service_call(
                 service, stime, controller, zone, sequence, data1
             )
-            self._replay_last_timer(stime)
+            self._update_all(stime)
         else:
             self._logger.log_service_call(
                 service, stime, controller, zone, sequence, data1, DEBUG
@@ -7198,6 +7370,13 @@ class IUCoordinator:
             self.timer(next_time)
             return next_time
         return None
+
+    def end_test(self) -> None:
+        """Main entry to finish a test"""
+        self._last_tick = None
+        self._last_muster = None
+        for ctr in self._controllers:
+            ctr.clear()
 
     def status_changed(
         self, stime: datetime, controller: IUController, zone: IUZone, state: bool

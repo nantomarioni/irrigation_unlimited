@@ -1,5 +1,6 @@
 """Test irrigation_unlimited history."""
 
+# pylint: disable=too-many-lines
 from unittest.mock import patch
 from datetime import datetime, timedelta
 from collections import Counter
@@ -42,7 +43,7 @@ def hist_data(
     no_attributes: bool = False,
 ) -> dict[str, list[ha.State]]:
     """Return dummy history data for a scheduled run"""
-
+    # pylint: disable=too-many-positional-arguments, too-many-locals
     result: dict[str, list[ha.State]] = {}
     idm = "binary_sensor.irrigation_unlimited_c1_m"
     idz1 = "binary_sensor.irrigation_unlimited_c1_z1"
@@ -51,10 +52,14 @@ def hist_data(
     atm = {"current_schedule": 0, "current_name": "Manual"}
 
     class Event(NamedTuple):
+        """Class to hold history event data"""
+
         atime: datetime
         entity_id: str
 
     class State(NamedTuple):
+        """Class to hold history state data"""
+
         state: str
         attributes: dict
 
@@ -133,6 +138,7 @@ def hist_data(
             result[event.entity_id].append(
                 ha.State(event.entity_id, state.state, state.attributes, event.atime)
             )
+
     return result
 
 
@@ -155,8 +161,7 @@ async def test_history_main(hass: ha.HomeAssistant, allow_memory_db):
     """Test out the history caching and timeline"""
     # pylint: disable=redefined-outer-name
 
-    async with IUExam(hass, "test_history.yaml") as exam:
-        await exam.load_dependencies()
+    async with IUExam(hass, "test_history.yaml", True) as exam:
 
         with patch(
             "homeassistant.components.recorder.history.get_significant_states"
@@ -164,7 +169,8 @@ async def test_history_main(hass: ha.HomeAssistant, allow_memory_db):
             mock.side_effect = hist_data
 
             await exam.begin_test(1)
-            await exam.run_for("00:02:00")
+            await exam.run_until("2021-01-04 06:02")
+            await hass.async_block_till_done()
 
             assert mock.call_count == 1
             state = hass.states.get("binary_sensor.irrigation_unlimited_c1_z1")
@@ -282,7 +288,8 @@ async def test_history_main(hass: ha.HomeAssistant, allow_memory_db):
 
             # Midnight rollover
             await exam.begin_test(2)
-            await exam.run_for("00:01:00")
+            await exam.run_until("2021-01-04 23:32")
+            await hass.async_block_till_done()
 
             state = hass.states.get("binary_sensor.irrigation_unlimited_c1_z1")
             assert state.attributes["today_total"] == 4.0
@@ -397,6 +404,7 @@ async def test_history_main(hass: ha.HomeAssistant, allow_memory_db):
             assert state.attributes["timeline"] == timeline
 
             await exam.run_until("2021-01-05 00:01:00")
+            await hass.async_block_till_done()
             state = hass.states.get("binary_sensor.irrigation_unlimited_c1_z1")
             assert state.attributes["today_total"] == 0.0
 
@@ -518,8 +526,7 @@ async def test_history_disabled(hass: ha.HomeAssistant, allow_memory_db):
     # pylint: disable=redefined-outer-name
     # pylint: disable=protected-access
 
-    async with IUExam(hass, "test_history_disabled.yaml") as exam:
-        await exam.load_dependencies()
+    async with IUExam(hass, "test_history_disabled.yaml", True) as exam:
 
         with patch(
             "homeassistant.components.recorder.history.get_significant_states"
@@ -560,8 +567,7 @@ async def test_history_object(hass: ha.HomeAssistant, allow_memory_db):
     def service_history(entity_ids: set[str]) -> None:
         entity_updates.extend(entity_ids)
 
-    async with IUExam(hass, "test_skeleton.yaml") as exam:
-        await exam.load_dependencies()
+    async with IUExam(hass, "test_skeleton.yaml", True) as exam:
 
         stime = mk_utc("2021-06-04 04:32:00")
         exam.coordinator.history.load(None, False)
@@ -709,8 +715,8 @@ async def test_history_object(hass: ha.HomeAssistant, allow_memory_db):
 
 async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
     """Test out the IUHistory object"""
-    async with IUExam(hass, "test_history_live.yaml") as exam:
-        await exam.load_dependencies()
+
+    async with IUExam(hass, "test_history_live.yaml", True) as exam:
         with patch(
             "homeassistant.components.recorder.history.get_significant_states"
         ) as mock:
@@ -845,6 +851,7 @@ async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
             )
 
             await exam.run_until("2024-07-16 06:08")
+            await hass.async_block_till_done()
             exam.check_iu_entity(
                 "c1_z1",
                 STATE_ON,
@@ -977,6 +984,7 @@ async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
                 },
             )
             await exam.run_until("2024-07-16 06:18")
+            await hass.async_block_till_done()
             exam.check_iu_entity(
                 "c1_z1",
                 STATE_OFF,
@@ -1124,6 +1132,7 @@ async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
             )
 
             await exam.run_until("2024-07-16 06:30")
+            await hass.async_block_till_done()
             exam.check_iu_entity(
                 "c1_z1",
                 STATE_OFF,
@@ -1400,6 +1409,7 @@ async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
                 },
             )
             await exam.run_until("2024-07-23 08:05")
+            await hass.async_block_till_done()
             await exam.call(
                 SERVICE_MANUAL_RUN,
                 {
@@ -1408,6 +1418,7 @@ async def test_history_live(hass: ha.HomeAssistant, allow_memory_db):
                 },
             )
             await exam.run_until("2024-07-23 08:30")
+            await hass.async_block_till_done()
             exam.check_iu_entity(
                 "c1_z1",
                 STATE_OFF,

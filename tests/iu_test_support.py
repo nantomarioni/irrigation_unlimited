@@ -84,8 +84,11 @@ class IUExam:
 
     default_config_dir = TEST_CONFIG_DIR
 
-    def __init__(self, hass: ha.HomeAssistant, config_file: str) -> None:
+    def __init__(
+        self, hass: ha.HomeAssistant, config_file: str, load_deps: bool = False
+    ) -> None:
         self._hass = hass
+        self._load_deps = load_deps
         self._config_directory, self._config_file = os.path.split(config_file)
         if self._config_directory == "":
             self._config_directory = type(self).default_config_dir
@@ -172,7 +175,7 @@ class IUExam:
         await async_setup_component(self._hass, domain, config)
         await self._hass.async_block_till_done()
 
-    async def load_dependencies(self) -> None:
+    async def _load_dependencies(self) -> None:
         """Load IU dependencies"""
         async_initialize_recorder(self._hass)
         await self.load_component("http", {})
@@ -186,6 +189,10 @@ class IUExam:
     async def setup(self) -> None:
         """Setup the hass environment"""
         _LOGGER.debug("Starting exam: %s", self.config_file_full)
+
+        if self._load_deps:
+            await self._load_dependencies()
+
         self._config = CONFIG_SCHEMA(load_yaml_config_file(self.config_file_full))
         if ha.DOMAIN in self._config:
             await async_process_ha_core_config(self._hass, self._config[ha.DOMAIN])
@@ -222,10 +229,9 @@ class IUExam:
         self._coordinator.clock.stop()
         self._current_time = self._coordinator.start_test(test_no)
         assert self._current_time is not None, f"Invalid test {test_no}"
-        self._last_stop = self._coordinator.tester.virtual_time(self._current_time)
-        self._coordinator.clock.test_ticker_update(self._current_time)
-        await self._hass.async_block_till_done()
         _LOGGER.debug("Starting test: %s", self._coordinator.tester.current_test.name)
+        self._coordinator.tester.ticker = self._current_time
+        await self.run_until(self._coordinator.tester.virtual_time(self._current_time))
 
     async def finish_test(self) -> None:
         """Finish a test"""
@@ -255,6 +261,7 @@ class IUExam:
                 test.errors,
                 NO_CHECK,
             )
+        self._coordinator.end_test()
 
     async def run_until(self, stop_at: datetime | str) -> None:
         """Run until a point in time"""
@@ -307,17 +314,22 @@ class IUExam:
         for test in range(self._coordinator.tester.total_tests):
             await self.run_test(test + 1)
 
-    async def call(self, service: str, data: dict[str, Any] = None) -> None:
+    async def call(
+        self, service: str, data: dict[str, Any] = None, return_response: bool = False
+    ) -> ha.ServiceResponse:
         """Call IU service"""
-        await self._hass.services.async_call(DOMAIN, service, data, True)
+        response_data = await self._hass.services.async_call(
+            DOMAIN, service, data, True, None, None, return_response
+        )
         await self._hass.async_block_till_done()
         self.check_labyrinth()
+        return response_data
 
     async def reload(self, config: str) -> None:
         """Reload the specified config file"""
         self._config_file = config
         with patch(
-            "homeassistant.core.Config.path",
+            "homeassistant.core_config.Config.path",
             return_value=self.config_file_full,
         ):
             await self.call(SERVICE_RELOAD)
@@ -359,6 +371,7 @@ class IUExam:
             )
 
         def check_controller(controller: IUController) -> None:
+            # pylint: disable=too-many-branches
             lst = list(controller.runs)
             controller_runs: set[IURun] = set(lst)
             assert len(lst) == len(controller_runs), "Controller runs not unique"
@@ -429,6 +442,7 @@ class IUExam:
     def check_attr(self, fields: dict, attr: dict) -> None:
         """Check the specified fields in the attributes"""
 
+        # pylint: disable=too-many-nested-blocks
         def check_field(field: str, expected, attribute) -> dict:
             result = {}
             if attribute != expected:
@@ -484,10 +498,9 @@ class IUExam:
                 if value.tzinfo == UTC:
                     value = as_local(value)
                 return f'mk_local("{value.strftime("%Y-%m-%d %H:%M:%S")}")'
-            elif isinstance(value, str):
+            if isinstance(value, str):
                 return f'"{value}"'
-            else:
-                return f"{value}"
+            return f"{value}"
 
         def print_attrs(level: int, attrs: dict[str, Any]) -> None:
             output(level, "{")
@@ -564,7 +577,7 @@ class IURedirectOutput:
         self.original_stdout = sys.stdout
 
     def __enter__(self):
-        sys.stdout = open(self._file, "w")
+        sys.stdout = open(self._file, "w", encoding="utf8")
         return self
 
     def __exit__(self, *args):
